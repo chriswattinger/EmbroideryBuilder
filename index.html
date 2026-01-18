@@ -14,8 +14,9 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
-    <!-- Use lucide-react UMD build for React components -->
-    <script src="https://unpkg.com/lucide-react@0.263.1/dist/umd/lucide-react.min.js"></script>
+    
+    <!-- 3. Icons: Use vanilla Lucide -->
+    <script src="https://unpkg.com/lucide@latest"></script>
 
     <style>
         ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -28,11 +29,43 @@
 <body class="bg-slate-50 text-slate-900 font-sans antialiased">
     <div id="root"></div>
 
-    <!-- 3. Application Logic -->
+    <!-- 4. Application Logic -->
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
-        // Access icons from the lucideReact global provided by the UMD script
-        const { Download, Upload, Trash2, Plus, Info, Scissors, Loader2, FolderOpen, Database, Save } = lucideReact;
+
+        // --- ICON WRAPPER ---
+        // Wraps vanilla Lucide icons for React usage
+        const Icon = ({ name, size = 24, className = "", ...props }) => {
+            const [svgHtml, setSvgHtml] = useState('');
+
+            useEffect(() => {
+                if (window.lucide && window.lucide.icons[name]) {
+                    const svg = window.lucide.icons[name].toSvg({
+                        width: size,
+                        height: size,
+                        class: className,
+                        ...props
+                    });
+                    setSvgHtml(svg);
+                }
+            }, [name, size, className, props]);
+
+            if (!svgHtml) return null;
+            return <span dangerouslySetInnerHTML={{ __html: svgHtml }} className="inline-flex items-center justify-center" />;
+        };
+
+        // Define icons used in the app
+        const Download = (p) => <Icon name="Download" {...p} />;
+        const Upload = (p) => <Icon name="Upload" {...p} />;
+        const Trash2 = (p) => <Icon name="Trash2" {...p} />;
+        const Plus = (p) => <Icon name="Plus" {...p} />;
+        const Info = (p) => <Icon name="Info" {...p} />;
+        const Scissors = (p) => <Icon name="Scissors" {...p} />;
+        const Loader2 = (p) => <Icon name="Loader2" {...p} className={`animate-spin ${p.className || ''}`} />;
+        const FolderOpen = (p) => <Icon name="FolderOpen" {...p} />;
+        const Database = (p) => <Icon name="Database" {...p} />;
+        const Save = (p) => <Icon name="Save" {...p} />;
+
 
         // --- CONSTANTS & TYPES ---
         const NORMAL = 0, JUMP = 1, TRIM = 2, STOP = 4, END = 8;
