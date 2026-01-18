@@ -5,9 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Embroidery Word Builder</title>
     
-    <!-- 1. Styles & Icons -->
+    <!-- 1. Styles -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
     
     <!-- 2. React & Libraries -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -15,6 +14,8 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <!-- Use lucide-react UMD build for React components -->
+    <script src="https://unpkg.com/lucide-react@0.263.1/dist/umd/lucide-react.min.js"></script>
 
     <style>
         ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -30,10 +31,87 @@
     <!-- 3. Application Logic -->
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
-        const { Download, Upload, Trash2, Plus, Info, Scissors, Loader2, FolderOpen } = lucide;
+        // Access icons from the lucideReact global provided by the UMD script
+        const { Download, Upload, Trash2, Plus, Info, Scissors, Loader2, FolderOpen, Database, Save } = lucideReact;
 
         // --- CONSTANTS & TYPES ---
         const NORMAL = 0, JUMP = 1, TRIM = 2, STOP = 4, END = 8;
+        const DB_NAME = 'EmbroideryFontDB';
+        const STORE_NAME = 'fonts';
+        const DB_VERSION = 1;
+
+        // --- UTILS: INDEXED DB ---
+        const dbApi = {
+            open: () => {
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open(DB_NAME, DB_VERSION);
+                    request.onerror = () => reject("DB Error");
+                    request.onupgradeneeded = (event) => {
+                        const db = event.target.result;
+                        if (!db.objectStoreNames.contains(STORE_NAME)) {
+                            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                        }
+                    };
+                    request.onsuccess = (event) => resolve(event.target.result);
+                });
+            },
+            saveFonts: async (fontMap) => {
+                const db = await dbApi.open();
+                return new Promise((resolve, reject) => {
+                    const transaction = db.transaction([STORE_NAME], 'readwrite');
+                    const store = transaction.objectStore(STORE_NAME);
+                    
+                    // Store individual files with composite ID
+                    let count = 0;
+                    Object.entries(fontMap).forEach(([fontName, files]) => {
+                        files.forEach(file => {
+                            store.put({
+                                id: `${fontName}_${file.name}`,
+                                fontName: fontName,
+                                fileName: file.name,
+                                blob: file.blob
+                            });
+                            count++;
+                        });
+                    });
+
+                    transaction.oncomplete = () => resolve(count);
+                    transaction.onerror = (e) => reject("Save failed: " + e.target.error);
+                });
+            },
+            getAllFonts: async () => {
+                const db = await dbApi.open();
+                return new Promise((resolve, reject) => {
+                    const transaction = db.transaction([STORE_NAME], 'readonly');
+                    const store = transaction.objectStore(STORE_NAME);
+                    const request = store.getAll();
+
+                    request.onsuccess = () => {
+                        const result = {};
+                        if (request.result.length === 0) {
+                            resolve(null);
+                            return;
+                        }
+                        request.result.forEach(item => {
+                            if (!result[item.fontName]) result[item.fontName] = [];
+                            result[item.fontName].push({ name: item.fileName, blob: item.blob });
+                        });
+                        resolve(result);
+                    };
+                    request.onerror = () => reject("Load failed");
+                });
+            },
+            clear: async () => {
+                const db = await dbApi.open();
+                return new Promise((resolve, reject) => {
+                     const transaction = db.transaction([STORE_NAME], 'readwrite');
+                     const store = transaction.objectStore(STORE_NAME);
+                     store.clear();
+                     transaction.oncomplete = () => resolve();
+                     transaction.onerror = () => reject("Clear failed");
+                });
+            }
+        };
         
         // --- UTILS: PES PARSER ---
         const PesParser = {
@@ -51,7 +129,6 @@
                 const stitches = [];
                 let x = 0, y = 0;
                 
-                // Helper to read stitch delta
                 const readDelta = () => {
                    let b = data[idx++];
                    if (b === 0xFF && data[idx] === 0x00) return null;
@@ -83,7 +160,6 @@
                     stitches.push({ x, y, flags: NORMAL });
                 }
 
-                // Bounds
                 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
                 stitches.forEach(s => {
                     if (s.x < minX) minX = s.x; if (s.x > maxX) maxX = s.x;
@@ -117,19 +193,18 @@
                 
                 if (stitchBytes[stitchBytes.length - 2] !== 0xFF) stitchBytes.push(0xFF, 0x00);
 
-                // Build File
                 const header = new Uint8Array(512);
                 const magic = "#PES0001";
                 for(let i=0; i<magic.length; i++) header[i] = magic.charCodeAt(i);
-                new DataView(header.buffer).setUint32(8, 512, true); // PEC Offset
+                new DataView(header.buffer).setUint32(8, 512, true); 
 
                 const pecBlock = new Uint8Array(532 + 2268 + 2 + stitchBytes.length);
                 const label = "PES MERGE";
                 for(let i=0; i<label.length; i++) pecBlock[i] = label.charCodeAt(i);
                 
-                pecBlock[48] = 0; // 1 Color (value is count-1)
-                const stitchOffset = 532 + 2268 + 1; // +1 for color index
-                pecBlock[stitchOffset-1] = 0; // Color index 0
+                pecBlock[48] = 0; 
+                const stitchOffset = 532 + 2268 + 1; 
+                pecBlock[stitchOffset-1] = 0; 
                 pecBlock.set(stitchBytes, stitchOffset);
 
                 const final = new Uint8Array(header.length + pecBlock.length);
@@ -181,7 +256,7 @@
                             if(parts[i].toUpperCase() === 'PES' && i > 0) fontName = parts[i-1];
                         }
                         if(fontName === 'Unknown' && parts.length > 1) fontName = parts[parts.length-2];
-                        if(fontName === 'Unknown' && parts.length === 1) fontName = "Root"; // Fallback
+                        if(fontName === 'Unknown' && parts.length === 1) fontName = "Root"; 
                         
                         fontName = fontName.replace(/_/g, ' ').trim();
                         if(!fonts[fontName]) fonts[fontName] = [];
@@ -229,6 +304,7 @@
         const App = () => {
             const [fonts, setFonts] = useState({});
             const [loading, setLoading] = useState(false);
+            const [loadingMsg, setLoadingMsg] = useState('');
             const [error, setError] = useState('');
             const [dragActive, setDragActive] = useState(false);
             
@@ -241,17 +317,56 @@
             
             const fileInputRef = useRef(null);
 
+            // Startup: Check for cached fonts
+            useEffect(() => {
+                const loadCached = async () => {
+                    setLoading(true);
+                    setLoadingMsg('Restoring Library...');
+                    try {
+                        const cached = await dbApi.getAllFonts();
+                        if (cached) {
+                            setFonts(cached);
+                            setSelFont(Object.keys(cached).sort()[0]);
+                        }
+                    } catch (e) {
+                        console.error("Cache load error", e);
+                    } finally {
+                        setLoading(false);
+                        setLoadingMsg('');
+                    }
+                };
+                loadCached();
+            }, []);
+
             const handleFile = async (file) => {
                 if(!file) return;
                 setLoading(true); setError('');
+                setLoadingMsg('Analyzing Zip File...');
                 try {
                     const loaded = await scanZipForFonts(file);
                     if(Object.keys(loaded).length === 0) throw new Error("No PES files found.");
-                    setFonts(loaded);
-                    setSelFont(Object.keys(loaded).sort()[0]);
+                    
+                    setLoadingMsg('Installing to Browser Storage...');
+                    const count = await dbApi.saveFonts(loaded);
+                    
+                    // Merge with existing
+                    const merged = { ...fonts, ...loaded };
+                    setFonts(merged);
+                    if(!selFont) setSelFont(Object.keys(loaded).sort()[0]);
                 } catch(e) {
                     setError("Failed to load fonts. Make sure it's a valid ZIP.");
                 } finally {
+                    setLoading(false);
+                    setLoadingMsg('');
+                }
+            };
+
+            const clearLibrary = async () => {
+                if(confirm("Are you sure you want to delete all saved fonts?")) {
+                    setLoading(true);
+                    await dbApi.clear();
+                    setFonts({});
+                    setSelFont('');
                     setLoading(false);
                 }
             };
@@ -266,6 +381,10 @@
 
             const generate = async () => {
                 setLoading(true);
+                setLoadingMsg('Generating Stitch Files...');
+                // Small delay to let UI render loading state
+                await new Promise(r => setTimeout(r, 100));
+
                 try {
                     for(const item of queue) {
                         const fontFiles = fonts[item.font];
@@ -337,6 +456,7 @@
                     setError("Error generating files");
                 }
                 setLoading(false);
+                setLoadingMsg('');
             };
 
             return (
@@ -346,7 +466,7 @@
                             <Scissors size={32} />
                         </div>
                         <h1 className="text-3xl font-bold mb-2">Embroidery Word Builder</h1>
-                        <p className="text-slate-500">Single-File Portable Version</p>
+                        <p className="text-slate-500">Portable Version with Library Storage</p>
                     </header>
 
                     <div className="grid md:grid-cols-2 gap-6">
@@ -358,15 +478,29 @@
                                 onDragLeave={() => setDragActive(false)}
                                 onDragOver={e => e.preventDefault()}
                                 onDrop={handleDrop}
-                                onClick={() => fileInputRef.current?.click()}
+                                onClick={() => !loading && fileInputRef.current?.click()}
                             >
                                 <input type="file" ref={fileInputRef} onChange={e => handleFile(e.target.files[0])} accept=".zip" className="hidden" />
-                                {loading ? <Loader2 className="animate-spin mx-auto text-indigo-600 mb-2" /> : <FolderOpen className="mx-auto text-slate-400 mb-2" size={32} />}
-                                <p className="font-medium text-slate-700">Drop Font Pack (.zip)</p>
-                                <p className="text-xs text-slate-400 mt-1">Supports full Google Drive zip exports</p>
-                                {Object.keys(fonts).length > 0 && (
-                                    <div className="mt-4 inline-flex items-center gap-2 text-xs font-bold text-green-600 bg-green-50 px-3 py-1 rounded-full">
-                                        <Info size={12}/> {Object.keys(fonts).length} Fonts Ready
+                                {loading ? (
+                                    <div className="py-2">
+                                        <Loader2 className="animate-spin mx-auto text-indigo-600 mb-2" />
+                                        <p className="text-sm font-medium text-indigo-600">{loadingMsg || 'Processing...'}</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <FolderOpen className="mx-auto text-slate-400 mb-2" size={32} />
+                                        <p className="font-medium text-slate-700">Drop Font Pack (.zip)</p>
+                                        <p className="text-xs text-slate-400 mt-1">Supports Google Drive exports</p>
+                                    </>
+                                )}
+                                {Object.keys(fonts).length > 0 && !loading && (
+                                    <div className="mt-4 flex flex-col items-center gap-2">
+                                        <div className="inline-flex items-center gap-2 text-xs font-bold text-green-600 bg-green-50 px-3 py-1 rounded-full">
+                                            <Database size={12}/> {Object.keys(fonts).length} Fonts Installed
+                                        </div>
+                                        <button onClick={(e) => { e.stopPropagation(); clearLibrary(); }} className="text-xs text-red-400 hover:text-red-600 underline">
+                                            Clear Library
+                                        </button>
                                     </div>
                                 )}
                             </div>
@@ -380,7 +514,8 @@
                                 </div>
                                 <div>
                                     <label className="text-xs font-bold text-slate-500 uppercase">Font</label>
-                                    <select value={selFont} onChange={e => setSelFont(e.target.value)} className="w-full border rounded p-2 mt-1">
+                                    <select value={selFont} onChange={e => setSelFont(e.target.value)} disabled={Object.keys(fonts).length === 0} className="w-full border rounded p-2 mt-1">
+                                        {Object.keys(fonts).length === 0 && <option>No fonts loaded</option>}
                                         {Object.keys(fonts).map(f => <option key={f} value={f}>{f}</option>)}
                                     </select>
                                 </div>
@@ -449,9 +584,6 @@
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
-    </script>
-    <script>
-        lucide.createIcons();
     </script>
 </body>
 </html>
